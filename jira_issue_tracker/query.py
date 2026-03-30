@@ -1,41 +1,69 @@
-def fetch_test_cases(jira, project_key, start_date, end_date):
-    """Executes JQL based on .env inputs and parses results."""
+def fetch_epic_hierarchy(jira, project_key, start_date, end_date):
+    """
+    1. Extracts Epics within a date range.
+    2. Finds all Tests linked to those Epics.
+    3. Parses test steps, status, and blockers.
+    """
+    # Step 1: Extract all Epics in the date range
+    # Base JQL
+    epic_jql = f'project = "{project_key}" AND issuetype = "Epic"'
     
-    # Tuned JQL using the provided dates
-    jql = (f'project = "{project_key}" AND issuetype = "Test" '
-           f'AND created >= "{start_date}" AND created <= "{end_date}" '
-           f'ORDER BY created ASC')
+    # Add date filters only if they exist
+    if start_date:
+        epic_jql += f' AND created >= "{start_date}"'
+    if end_date:
+        epic_jql += f' AND created <= "{end_date}"'
+        
+    epic_jql += ' ORDER BY created ASC'
     
-    print(f"Executing Query: {jql}")
+    print(f"Searching for Epics: {epic_jql}")
+    epics = jira.search_issues(epic_jql)
     
-    # Increase maxResults if you expect more than 100 tests
-    issues = jira.search_issues(jql, maxResults=500)
-    extracted_data = []
+    all_rows = []
 
-    for issue in issues:
-        # 1. Extraction of Test Steps (Adjust customfield_ID if needed)
-        steps_field = getattr(issue.fields, 'customfield_12345', [])
-        steps = [f"{i+1}. {s.get('step', '')}" for i, s in enumerate(steps_field)]
-        results = [f"{i+1}. {s.get('result', '')}" for i, s in enumerate(steps_field)]
+    for epic in epics:
+        epic_id = epic.key
+        epic_desc = epic.fields.summary
+        epic_created = epic.fields.created[:10]
 
-        # 2. Traceability: "Is Blocked By"
-        blockers = []
-        if hasattr(issue.fields, 'issuelinks'):
-            for link in issue.fields.issuelinks:
-                if hasattr(link, 'type') and link.type.name == 'Blocks' and hasattr(link, 'inwardIssue'):
-                    bug = link.inwardIssue
-                    if bug.fields.issuetype.name == "Bug":
-                        blockers.append(f"{bug.key} ({bug.fields.status.name})")
+        # Step 2: Get all Tests belonging to THIS Epic
+        # For Data Center, use 'Epic Link'. For Cloud, 'parent' is often used.
+        test_jql = f'project = "{project_key}" AND issuetype = "Test" AND "Epic Link" = {epic_id}'
+        tests = jira.search_issues(test_jql)
 
-        # 3. Row Construction
-        extracted_data.append({
-            "Key": issue.key,
-            "Summary": issue.fields.summary,
-            "Execution Status": issue.fields.status.name,
-            "Created Date": issue.fields.created[:10],
-            "Test Steps": "\n".join(steps) if steps else "N/A",
-            "Expected Results": "\n".join(results) if results else "N/A",
-            "Blocking Bugs": "\n".join(blockers) if blockers else "None"
-        })
+        if not tests:
+            # Optional: Add the Epic even if it has no tests
+            continue
+
+        for test in tests:
+            # a. Extract Test Steps & Expected Results
+            steps_field = getattr(test.fields, 'customfield_12345', []) # Replace with your ID
+            steps = [f"{i+1}. {s.get('step', '')}" for i, s in enumerate(steps_field)]
+            results = [f"{i+1}. {s.get('result', '')}" for i, s in enumerate(steps_field)]
+
+            # b. Extract Status
+            test_status = test.fields.status.name
+
+            # c. Extract Blocks ($.blockId + '=' + $.blockedStatus)
+            blocked_by_list = []
+            if hasattr(test.fields, 'issuelinks'):
+                for link in test.fields.issuelinks:
+                    if hasattr(link, 'type') and link.type.name == 'Blocks' and hasattr(link, 'inwardIssue'):
+                        bug = link.inwardIssue
+                        # Logic: ID=Status
+                        blocked_by_list.append(f"{bug.key}={bug.fields.status.name}")
+
+            # 3. Prepare row for XLSX
+            all_rows.append({
+                "epic_id": epic_id,
+                "epic_desc": epic_desc,
+                "created_at": epic_created,
+                "test_id": test.key,
+                "test_desc": test.fields.summary,
+                "test_steps": "\n".join(steps),
+                "expected_results": "\n".join(results),
+                "test_status": test_status,
+                "blocked_by": "\n".join(blocked_by_list) if blocked_by_list else "None"
+            })
     
-    return extracted_data
+    return all_rows
