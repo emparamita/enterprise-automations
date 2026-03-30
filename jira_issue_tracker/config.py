@@ -13,7 +13,11 @@ class JiraConfig:
     """Secure configuration loader for Jira."""
     SERVER = os.getenv("JIRA_SERVER")
     TOKEN = os.getenv("JIRA_TOKEN")
+    
+    # Inputs moved to .env
     PROJECT = os.getenv("PROJECT_KEY")
+    START_DATE = os.getenv("START_DATE")
+    END_DATE = os.getenv("END_DATE")
 
     @classmethod
     def get_client(cls):
@@ -28,5 +32,5 @@ class JiraConfig:
                 options={'verify': False}
             )
         except Exception as e:
-            print(f"Failed to connect to Jira at {cls.SERVER}: {e}")
+            print(f"Failed to connect to Jira: {e}")
             return None

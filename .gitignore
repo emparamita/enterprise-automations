@@ -1,4 +1,5 @@
 .env
 __pycache__/
-*.xlsx
 .ipynb_checkpoints/
+# Ignore all files inside the exports directory
+exports/
