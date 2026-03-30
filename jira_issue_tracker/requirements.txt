@@ -1,0 +1,5 @@
+jira
+pandas
+openpyxl
+python-dotenv
+urllib3
