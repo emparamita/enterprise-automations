@@ -3,28 +3,31 @@ import urllib3
 from jira import JIRA
 from dotenv import load_dotenv
 
-# Load variables from .env file
 load_dotenv()
-
-# Suppress SSL warnings for internal network usage
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 class JiraConfig:
-    """Secure configuration loader for Jira."""
+    """Secure configuration loader for Generic Jira Extraction."""
     SERVER = os.getenv("JIRA_SERVER")
     TOKEN = os.getenv("JIRA_TOKEN")
     
-    # Inputs moved to .env
+    # Generic Inputs
     PROJECT = os.getenv("PROJECT_KEY")
+    PARENT_TYPE = os.getenv("PARENT_TYPE")
+    CHILD_TYPE = os.getenv("CHILD_TYPE")
+    LINK_FIELD = os.getenv("LINK_FIELD", "Epic Link")
+    
+    # Date Range
     START_DATE = os.getenv("START_DATE")
     END_DATE = os.getenv("END_DATE")
 
+    # Field IDs
+    STEPS_FIELD = os.getenv("STEPS_CUSTOM_FIELD")
+
     @classmethod
     def get_client(cls):
-        """Initializes and returns a secure JIRA client instance."""
-        if not cls.TOKEN:
-            raise ValueError("JIRA_TOKEN not found! Check your .env file.")
-            
+        if not cls.TOKEN or not cls.SERVER:
+            raise ValueError("Credentials missing in .env file.")
         try:
             return JIRA(
                 server=cls.SERVER,
@@ -32,5 +35,5 @@ class JiraConfig:
                 options={'verify': False}
             )
         except Exception as e:
-            print(f"Failed to connect to Jira: {e}")
+            print(f"Connection Error: {e}")
             return None
