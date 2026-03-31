@@ -1,83 +1,69 @@
-import requests
-import urllib3
-import sys
+import pandas as pd
+from datetime import datetime
+from pathlib import Path
+from config import JiraConfig
+from query import stream_hierarchy_data
+from openpyxl.styles import Alignment
 
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+def main():
+    jira = JiraConfig.get_client()
+    if not jira:
+        return
 
-def fetch_zephyr_details(issue_obj, config):
-    unique_id = issue_obj.id 
-    headers = {"Authorization": f"Bearer {config.TOKEN}"}
+    export_dir = Path("exports")
+    export_dir.mkdir(exist_ok=True)
     
-    steps_list, results_list = [], []
-    status_str = "Unexecuted"
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M")
+    ext = "csv" if JiraConfig.EXPORT_FORMAT == "CSV" else "xlsx"
+    output_path = export_dir / f"jira_tracker_{timestamp}.{ext}"
 
-    # Set a strict 5-second timeout so the script doesn't hang forever
-    timeout_val = 5 
+    fieldnames = [
+        "parent_id", 
+        "parent_desc", 
+        "created_at", 
+        "child_id", 
+        "child_desc", 
+        "child_steps", 
+        "expected_results", 
+        "child_status", 
+        "blocked_by"
+    ]
 
-    # 1. Fetch Steps
-    step_url = f"{config.SERVER}/rest/zapi/latest/teststep/{unique_id}"
-    try:
-        # Added timeout=timeout_val
-        res = requests.get(step_url, headers=headers, verify=False, timeout=timeout_val)
-        if res.status_code == 200:
-            data = res.json()
-            steps_data = data.get('stepBeanCollection', [])
-            for i, s in enumerate(steps_data):
-                steps_list.append(f"{i+1}. {s.get('step', '')}")
-                results_list.append(f"{i+1}. {s.get('result', '')}")
-    except Exception as e:
-        print(f"      ⚠️ Step Timeout/Error for {issue_obj.key}: {e}")
-
-    # 2. Fetch Execution
-    exec_url = f"{config.SERVER}/rest/zapi/latest/execution?issueId={unique_id}"
-    try:
-        res = requests.get(exec_url, headers=headers, verify=False, timeout=timeout_val)
-        if res.status_code == 200:
-            executions = res.json().get('executions', [])
-            if executions:
-                status_str = executions[0].get('statusName', 'Unknown')
-    except Exception as e:
-        print(f"      ⚠️ Exec Timeout/Error for {issue_obj.key}: {e}")
-
-    return "\n".join(steps_list), "\n".join(results_list), status_str
-
-def stream_hierarchy_data(jira, config):
-    parent_jql = f'project = "{config.PROJECT}" AND issuetype = "{config.PARENT_TYPE}"'
+    print("Starting Extraction...")
     
-    print(f"🔍 Searching Parents: {parent_jql}")
-    parents = list(get_paged_issues(jira, parent_jql, config.API_BLOCK_SIZE))
-    print(f"📊 Found {len(parents)} Parent issues.")
+    data_list = []
+    
+    # Collect data from the generator defined in query.py
+    for row in stream_hierarchy_data(jira, JiraConfig):
+        data_list.append(row)
+        if len(data_list) % 5 == 0:
+            print(f"Extracted {len(data_list)} rows...")
+    
+    # Check if data_list is empty to prevent IndexErrors in ExcelWriter
+    if not data_list:
+        print("No data was found for the given criteria.")
+        print("Verify PROJECT_KEY, PARENT_TYPE, and CHILD_TYPE in the .env file.")
+        return
 
-    for parent in parents:
-        print(f"  📂 Processing Parent: {parent.key}")
-        child_jql = (f'project = "{config.PROJECT}" AND issuetype = "{config.CHILD_TYPE}" '
-                     f'AND "{config.LINK_FIELD}" = {parent.key}')
-        
-        # We wrap this in a list to ensure it's not an empty generator hang
-        children = list(get_paged_issues(jira, child_jql, config.API_BLOCK_SIZE))
-        
-        for child in children:
-            print(f"    📄 Fetching Child: {child.key} (ID: {child.id})", end='\r')
-            sys.stdout.flush() # Force print to screen immediately
-            
-            row = {
-                "parent_id": parent.key,
-                "parent_desc": parent.fields.summary,
-                "created_at": parent.fields.created[:10],
-                "child_id": child.key,
-                "child_desc": child.fields.summary,
-                "child_steps": "N/A",
-                "expected_results": "N/A",
-                "child_status": child.fields.status.name,
-                "blocked_by": "None"
-            }
+    df = pd.DataFrame(data_list, columns=fieldnames)
 
-            if child.fields.issuetype.name == 'Test':
-                z_steps, z_results, z_status = fetch_zephyr_details(child, config)
-                row["child_steps"] = z_steps
-                row["expected_results"] = z_results
-                if z_status != "Unexecuted":
-                    row["child_status"] = z_status
+    if JiraConfig.EXPORT_FORMAT == "CSV":
+        df.to_csv(output_path, index=False, encoding='utf-8')
+    else:
+        try:
+            with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
+                df.to_excel(writer, index=False, sheet_name='Report')
+                ws = writer.sheets['Report']
+                
+                # Apply text wrapping and alignment to all cells
+                for r in ws.iter_rows(min_row=2):
+                    for cell in r:
+                        cell.alignment = Alignment(wrapText=True, vertical='top')
+        except Exception as e:
+            print(f"Excel Error: {e}")
+            return
 
-            # Blocker logic stays the same...
-            yield row
+    print(f"Export Complete: {len(df)} rows saved to {output_path}")
+
+if __name__ == "__main__":
+    main()
