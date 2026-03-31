@@ -1,69 +1,96 @@
-import pandas as pd
-from datetime import datetime
-from pathlib import Path
-from config import JiraConfig
-from query import stream_hierarchy_data
-from openpyxl.styles import Alignment
+import requests
+import logging
+import urllib3
 
-def main():
-    jira = JiraConfig.get_client()
-    if not jira:
-        return
+logger = logging.getLogger(__name__)
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-    export_dir = Path("exports")
-    export_dir.mkdir(exist_ok=True)
-    
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M")
-    ext = "csv" if JiraConfig.EXPORT_FORMAT == "CSV" else "xlsx"
-    output_path = export_dir / f"jira_tracker_{timestamp}.{ext}"
-
-    fieldnames = [
-        "parent_id", 
-        "parent_desc", 
-        "created_at", 
-        "child_id", 
-        "child_desc", 
-        "child_steps", 
-        "expected_results", 
-        "child_status", 
-        "blocked_by"
-    ]
-
-    print("Starting Extraction...")
-    
-    data_list = []
-    
-    # Collect data from the generator defined in query.py
-    for row in stream_hierarchy_data(jira, JiraConfig):
-        data_list.append(row)
-        if len(data_list) % 5 == 0:
-            print(f"Extracted {len(data_list)} rows...")
-    
-    # Check if data_list is empty to prevent IndexErrors in ExcelWriter
-    if not data_list:
-        print("No data was found for the given criteria.")
-        print("Verify PROJECT_KEY, PARENT_TYPE, and CHILD_TYPE in the .env file.")
-        return
-
-    df = pd.DataFrame(data_list, columns=fieldnames)
-
-    if JiraConfig.EXPORT_FORMAT == "CSV":
-        df.to_csv(output_path, index=False, encoding='utf-8')
-    else:
+def get_paged_issues(jira, jql, block_size):
+    start_at = 0
+    logger.debug(f"Executing JQL: {jql} with block size {block_size}")
+    while True:
         try:
-            with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
-                df.to_excel(writer, index=False, sheet_name='Report')
-                ws = writer.sheets['Report']
-                
-                # Apply text wrapping and alignment to all cells
-                for r in ws.iter_rows(min_row=2):
-                    for cell in r:
-                        cell.alignment = Alignment(wrapText=True, vertical='top')
+            issues = jira.search_issues(jql, startAt=start_at, maxResults=block_size)
+            if not issues:
+                break
+            logger.debug(f"Retrieved {len(issues)} issues starting at {start_at}")
+            for issue in issues:
+                yield issue
+            if len(issues) < block_size:
+                break
+            start_at += block_size
         except Exception as e:
-            print(f"Excel Error: {e}")
-            return
+            logger.error(f"Error during JQL pagination: {e}")
+            break
 
-    print(f"Export Complete: {len(df)} rows saved to {output_path}")
+def fetch_zephyr_details(issue_obj, config):
+    unique_id = issue_obj.id 
+    headers = {"Authorization": f"Bearer {config.TOKEN}"}
+    steps_list, results_list = [], []
+    status_str = "Unexecuted"
 
-if __name__ == "__main__":
-    main()
+    logger.debug(f"Calling ZAPI for Issue ID: {unique_id} ({issue_obj.key})")
+    
+    # Step Fetching
+    step_url = f"{config.SERVER}/rest/zapi/latest/teststep/{unique_id}"
+    try:
+        res = requests.get(step_url, headers=headers, verify=False, timeout=10)
+        if res.status_code == 200:
+            data = res.json()
+            steps_data = data.get('stepBeanCollection', [])
+            for i, s in enumerate(steps_data):
+                steps_list.append(f"{i+1}. {s.get('step', '')}")
+                results_list.append(f"{i+1}. {s.get('result', '')}")
+        else:
+            logger.warning(f"ZAPI Steps returned {res.status_code} for {issue_obj.key}")
+    except Exception as e:
+        logger.error(f"ZAPI Step Timeout/Error for {issue_obj.key}: {e}")
+
+    # Execution Fetching
+    exec_url = f"{config.SERVER}/rest/zapi/latest/execution?issueId={unique_id}"
+    try:
+        res = requests.get(exec_url, headers=headers, verify=False, timeout=10)
+        if res.status_code == 200:
+            executions = res.json().get('executions', [])
+            if executions:
+                status_str = executions[0].get('statusName', 'Unknown')
+        else:
+            logger.warning(f"ZAPI Exec returned {res.status_code} for {issue_obj.key}")
+    except Exception as e:
+        logger.error(f"ZAPI Exec Timeout/Error for {issue_obj.key}: {e}")
+
+    return "\n".join(steps_list), "\n".join(results_list), status_str
+
+def stream_hierarchy_data(jira, config):
+    parent_jql = f'project = "{config.PROJECT}" AND issuetype = "{config.PARENT_TYPE}"'
+    logger.info(f"Starting hierarchy stream for project: {config.PROJECT}")
+    
+    for parent in get_paged_issues(jira, parent_jql, config.API_BLOCK_SIZE):
+        logger.info(f"Processing Parent: {parent.key}")
+        
+        child_jql = (f'project = "{config.PROJECT}" AND issuetype = "{config.CHILD_TYPE}" '
+                     f'AND "{config.LINK_FIELD}" = {parent.key}')
+        
+        for child in get_paged_issues(jira, child_jql, config.API_BLOCK_SIZE):
+            logger.debug(f"Processing Child: {child.key}")
+            
+            row = {
+                "parent_id": parent.key,
+                "parent_desc": parent.fields.summary,
+                "created_at": parent.fields.created[:10],
+                "child_id": child.key,
+                "child_desc": child.fields.summary,
+                "child_steps": "N/A",
+                "expected_results": "N/A",
+                "child_status": child.fields.status.name,
+                "blocked_by": "None"
+            }
+
+            if child.fields.issuetype.name == 'Test':
+                z_steps, z_results, z_status = fetch_zephyr_details(child, config)
+                row["child_steps"] = z_steps
+                row["expected_results"] = z_results
+                if z_status != "Unexecuted":
+                    row["child_status"] = z_status
+
+            yield row
