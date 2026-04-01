@@ -19,40 +19,43 @@ def main():
     entities, linked_tests, blockers = process_entities(jira, JiraConfig)
 
     if not entities:
-        logger.warning("No data found.")
+        logger.warning("No data collected.")
         return
 
-    df_main = pd.DataFrame(entities)
-    df_linked_tests = pd.DataFrame(linked_tests)
-    df_blockers = pd.DataFrame(blockers)
-
-    # Determine tab names and logic
-    main_tab_name = JiraConfig.ENTITY_TYPE.capitalize()
     is_test_mode = (JiraConfig.ENTITY_TYPE.lower() == 'test')
+    main_tab_name = JiraConfig.ENTITY_TYPE.capitalize()
+
+    # Define Column Order for Test Data
+    test_cols = [
+        "parent_id", "issue_key", "summary", "status", "created", 
+        "child_steps", "last_executed_by", "last_execution_timestamp", "last_execution_status"
+    ]
 
     if JiraConfig.EXPORT_FORMAT == "EXCEL":
         output_path = export_dir / f"{main_tab_name}_Report_{timestamp}.xlsx"
         with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
-            # Tab 1: The Primary Entity (e.g., Test or Enhancement)
+            
+            # Tab 1: Primary Entity
+            df_main = pd.DataFrame(entities)
+            if is_test_mode:
+                df_main = df_main[test_cols]
             df_main.to_excel(writer, sheet_name=main_tab_name, index=False)
             
-            # Tab 2: Linked Tests (Only if Entity is NOT Test and tests were found)
-            if not is_test_mode and not df_linked_tests.empty:
-                df_linked_tests.to_excel(writer, sheet_name='Linked_Tests', index=False)
+            # Tab 2: Linked Tests (for non-test entities)
+            if not is_test_mode and linked_tests:
+                df_linked = pd.DataFrame(linked_tests)
+                df_linked = df_linked[test_cols]
+                df_linked.to_excel(writer, sheet_name='Linked_Tests', index=False)
             
-            # Tab 3: Blockers (If any found)
-            if not df_blockers.empty:
-                df_blockers.to_excel(writer, sheet_name='Blockers', index=False)
+            # Tab 3: Blockers
+            if blockers:
+                pd.DataFrame(blockers).to_excel(writer, sheet_name='Blockers', index=False)
         
-        logger.info(f"Excel report created: {output_path}")
+        logger.info(f"Export Success: {output_path}")
     else:
-        # CSV Export Logic
-        df_main.to_csv(export_dir / f"{main_tab_name}_{timestamp}.csv", index=False)
-        if not is_test_mode and not df_linked_tests.empty:
-            df_linked_tests.to_csv(export_dir / f"linked_tests_{timestamp}.csv", index=False)
-        if not df_blockers.empty:
-            df_blockers.to_csv(export_dir / f"blockers_{timestamp}.csv", index=False)
-        logger.info("Individual CSV files generated.")
+        # CSV Handling logic...
+        pd.DataFrame(entities).to_csv(export_dir / f"{main_tab_name}_{timestamp}.csv", index=False)
+        logger.info("CSV files created.")
 
 if __name__ == "__main__":
     main()
