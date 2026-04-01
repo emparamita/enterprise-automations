@@ -41,55 +41,75 @@ def get_paged_issues(jira, jql, block_size):
         start_at += block_size
 
 def process_entities(jira, config):
-    """Main logic to extract entities, linked tests, and blockers."""
+    """Logic to branch between direct Test extraction and Parent-linked extraction."""
     jql = f'project = "{config.PROJECT}" AND issuetype = "{config.ENTITY_TYPE}"'
     if config.START_DATE: jql += f' AND created >= "{config.START_DATE}"'
     if config.END_DATE: jql += f' AND created <= "{config.END_DATE}"'
     
-    logger.info(f"Executing Master JQL: {jql}")
+    logger.info(f"Executing JQL: {jql}")
     
-    entities, tests, blockers = [], [], []
-    
+    main_entities, linked_tests, blockers = [], [], []
+    is_direct_test = (config.ENTITY_TYPE.lower() == 'test')
+
     for issue in get_paged_issues(jira, jql, config.API_BLOCK_SIZE):
         logger.info(f"Processing: {issue.key}")
         
+        # Base entity data
         item_data = {
             "issue_id": issue.id,
             "issue_key": issue.key,
             "summary": issue.fields.summary,
             "status": issue.fields.status.name,
-            "inwards": [],
-            "outwards": []
+            "created": issue.fields.created[:10]
         }
-        
-        if hasattr(issue.fields, 'issuelinks'):
-            for link in issue.fields.issuelinks:
-                # Process OUTWARD Links
-                if hasattr(link, 'outwardIssue'):
-                    out = link.outwardIssue
-                    out_data = {"id": out.id, "key": out.key, "name": out.fields.issuetype.name, "status": out.fields.status.name}
-                    item_data["outwards"].append(out_data)
+
+        # --- BRANCH 1: DIRECT TEST EXTRACTION ---
+        if is_direct_test:
+            s, r, st = fetch_zephyr_data(issue.id, issue.key, config)
+            item_data.update({"steps": s, "results": r, "execution_status": st})
+            main_entities.append(item_data)
+            
+            # Check for blockers directly linked to this test
+            if hasattr(issue.fields, 'issuelinks'):
+                for link in issue.fields.issuelinks:
+                    if link.type.name == 'Blocks' and hasattr(link, 'inwardIssue'):
+                        bug = link.inwardIssue
+                        blockers.append({
+                            "blocked_test": issue.key,
+                            "bug_key": bug.key,
+                            "bug_summary": bug.fields.summary,
+                            "bug_status": bug.fields.status.name
+                        })
+
+        # --- BRANCH 2: PARENT ENTITY EXTRACTION (Enhancement, etc.) ---
+        else:
+            main_entities.append(item_data)
+            if hasattr(issue.fields, 'issuelinks'):
+                for link in issue.fields.issuelinks:
+                    linked = getattr(link, 'outwardIssue', getattr(link, 'inwardIssue', None))
+                    if not linked: continue
                     
-                    if out.fields.issuetype.name == 'Test':
-                        s, r, st = fetch_zephyr_data(out.id, out.key, config)
-                        tests.append({"parent_key": issue.key, "test_key": out.key, "summary": out.fields.summary, "steps": s, "results": r, "execution_status": st})
+                    # Extract linked Tests
+                    if linked.fields.issuetype.name == 'Test':
+                        s, r, st = fetch_zephyr_data(linked.id, linked.key, config)
+                        linked_tests.append({
+                            "parent_key": issue.key,
+                            "test_key": linked.key,
+                            "summary": linked.fields.summary,
+                            "steps": s, 
+                            "results": r, 
+                            "execution_status": st
+                        })
                     
+                    # Extract linked Blockers
                     if link.type.name == 'Blocks':
-                        blockers.append({"source_key": issue.key, "target_key": out.key, "type": "Outward-Blocks", "status": out.fields.status.name})
+                        source = issue.key if hasattr(link, 'outwardIssue') else linked.key
+                        target = linked.key if hasattr(link, 'outwardIssue') else issue.key
+                        blockers.append({
+                            "source": source,
+                            "target": target,
+                            "status": linked.fields.status.name,
+                            "summary": linked.fields.summary
+                        })
 
-                # Process INWARD Links
-                if hasattr(link, 'inwardIssue'):
-                    inv = link.inwardIssue
-                    inv_data = {"id": inv.id, "key": inv.key, "name": inv.fields.issuetype.name, "status": inv.fields.status.name}
-                    item_data["inwards"].append(inv_data)
-                    
-                    if inv.fields.issuetype.name == 'Test':
-                        s, r, st = fetch_zephyr_data(inv.id, inv.key, config)
-                        tests.append({"parent_key": issue.key, "test_key": inv.key, "summary": inv.fields.summary, "steps": s, "results": r, "execution_status": st})
-
-                    if link.type.name == 'Blocks':
-                        blockers.append({"source_key": inv.key, "target_key": issue.key, "type": "Inward-Blocks", "status": inv.fields.status.name})
-
-        entities.append(item_data)
-        
-    return entities, tests, blockers
+    return main_entities, linked_tests, blockers

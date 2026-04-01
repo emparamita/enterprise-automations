@@ -14,40 +14,45 @@ def main():
 
     export_dir = Path("exports")
     export_dir.mkdir(exist_ok=True)
-    
     timestamp = datetime.now().strftime("%Y%m%d_%H%M")
     
-    logger.info(f"Starting Extraction for {JiraConfig.ENTITY_TYPE}...")
-    entities, tests, blockers = process_entities(jira, JiraConfig)
+    entities, linked_tests, blockers = process_entities(jira, JiraConfig)
 
     if not entities:
-        logger.warning("No data found for the specified criteria.")
+        logger.warning("No data found.")
         return
 
-    # Prepare DataFrames
-    df_entities = pd.DataFrame(entities)
-    df_tests = pd.DataFrame(tests)
+    df_main = pd.DataFrame(entities)
+    df_linked_tests = pd.DataFrame(linked_tests)
     df_blockers = pd.DataFrame(blockers)
 
+    # Determine tab names and logic
+    main_tab_name = JiraConfig.ENTITY_TYPE.capitalize()
+    is_test_mode = (JiraConfig.ENTITY_TYPE.lower() == 'test')
+
     if JiraConfig.EXPORT_FORMAT == "EXCEL":
-        output_path = export_dir / f"Master_Report_{timestamp}.xlsx"
-        logger.info(f"Assembling Excel tabs at {output_path}")
+        output_path = export_dir / f"{main_tab_name}_Report_{timestamp}.xlsx"
         with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
-            df_entities.to_excel(writer, sheet_name='Main_Entities', index=False)
-            if not df_tests.empty:
-                df_tests.to_excel(writer, sheet_name='Linked_Tests', index=False)
+            # Tab 1: The Primary Entity (e.g., Test or Enhancement)
+            df_main.to_excel(writer, sheet_name=main_tab_name, index=False)
+            
+            # Tab 2: Linked Tests (Only if Entity is NOT Test and tests were found)
+            if not is_test_mode and not df_linked_tests.empty:
+                df_linked_tests.to_excel(writer, sheet_name='Linked_Tests', index=False)
+            
+            # Tab 3: Blockers (If any found)
             if not df_blockers.empty:
                 df_blockers.to_excel(writer, sheet_name='Blockers', index=False)
+        
+        logger.info(f"Excel report created: {output_path}")
     else:
-        # Generate individual CSVs
-        df_entities.to_csv(export_dir / f"entities_{timestamp}.csv", index=False)
-        if not df_tests.empty:
-            df_tests.to_csv(export_dir / f"tests_{timestamp}.csv", index=False)
+        # CSV Export Logic
+        df_main.to_csv(export_dir / f"{main_tab_name}_{timestamp}.csv", index=False)
+        if not is_test_mode and not df_linked_tests.empty:
+            df_linked_tests.to_csv(export_dir / f"linked_tests_{timestamp}.csv", index=False)
         if not df_blockers.empty:
             df_blockers.to_csv(export_dir / f"blockers_{timestamp}.csv", index=False)
-        logger.info("CSV extraction complete.")
-
-    logger.info("Job finished successfully.")
+        logger.info("Individual CSV files generated.")
 
 if __name__ == "__main__":
     main()
