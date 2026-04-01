@@ -1,69 +1,53 @@
-import logging
 import pandas as pd
+import logging
 from datetime import datetime
 from pathlib import Path
 from config import JiraConfig
-from query import stream_hierarchy_data
-from openpyxl.styles import Alignment
+from query import process_entities
 
 def main():
-    # Initialize Logger
     JiraConfig.setup_logging()
     logger = logging.getLogger("main")
     
-    logger.info("Initializing Jira connection...")
     jira = JiraConfig.get_client()
-    if not jira:
-        return
+    if not jira: return
 
     export_dir = Path("exports")
     export_dir.mkdir(exist_ok=True)
     
     timestamp = datetime.now().strftime("%Y%m%d_%H%M")
-    ext = "csv" if JiraConfig.EXPORT_FORMAT == "CSV" else "xlsx"
-    output_path = export_dir / f"jira_tracker_{timestamp}.{ext}"
-
-    fieldnames = [
-        "parent_id", "parent_desc", "created_at", "child_id", 
-        "child_desc", "child_steps", "expected_results", 
-        "child_status", "blocked_by"
-    ]
-
-    logger.info("Starting data extraction loop...")
-    data_list = []
     
-    try:
-        for row in stream_hierarchy_data(jira, JiraConfig):
-            data_list.append(row)
-            if len(data_list) % 10 == 0:
-                logger.info(f"Progress: {len(data_list)} issues processed.")
-    except Exception as e:
-        logger.critical(f"Critical error during stream: {e}")
-        return
-    
-    if not data_list:
-        logger.warning("Extraction completed but no records were found.")
+    logger.info(f"Starting Extraction for {JiraConfig.ENTITY_TYPE}...")
+    entities, tests, blockers = process_entities(jira, JiraConfig)
+
+    if not entities:
+        logger.warning("No data found for the specified criteria.")
         return
 
-    logger.info(f"Generating {JiraConfig.EXPORT_FORMAT} file...")
-    df = pd.DataFrame(data_list, columns=fieldnames)
+    # Prepare DataFrames
+    df_entities = pd.DataFrame(entities)
+    df_tests = pd.DataFrame(tests)
+    df_blockers = pd.DataFrame(blockers)
 
-    if JiraConfig.EXPORT_FORMAT == "CSV":
-        df.to_csv(output_path, index=False, encoding='utf-8')
+    if JiraConfig.EXPORT_FORMAT == "EXCEL":
+        output_path = export_dir / f"Master_Report_{timestamp}.xlsx"
+        logger.info(f"Assembling Excel tabs at {output_path}")
+        with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
+            df_entities.to_excel(writer, sheet_name='Main_Entities', index=False)
+            if not df_tests.empty:
+                df_tests.to_excel(writer, sheet_name='Linked_Tests', index=False)
+            if not df_blockers.empty:
+                df_blockers.to_excel(writer, sheet_name='Blockers', index=False)
     else:
-        try:
-            with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
-                df.to_excel(writer, index=False, sheet_name='Report')
-                ws = writer.sheets['Report']
-                for r in ws.iter_rows(min_row=2):
-                    for cell in r:
-                        cell.alignment = Alignment(wrapText=True, vertical='top')
-        except Exception as e:
-            logger.error(f"Failed to write Excel file: {e}")
-            return
+        # Generate individual CSVs
+        df_entities.to_csv(export_dir / f"entities_{timestamp}.csv", index=False)
+        if not df_tests.empty:
+            df_tests.to_csv(export_dir / f"tests_{timestamp}.csv", index=False)
+        if not df_blockers.empty:
+            df_blockers.to_csv(export_dir / f"blockers_{timestamp}.csv", index=False)
+        logger.info("CSV extraction complete.")
 
-    logger.info(f"Process Successful. Total records: {len(df)}")
-    logger.info(f"Output saved to: {output_path}")
+    logger.info("Job finished successfully.")
 
 if __name__ == "__main__":
     main()
