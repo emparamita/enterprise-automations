@@ -96,7 +96,8 @@ def process_entities(jira, config):
                 "summary": issue.fields.summary,
                 "status": issue.fields.status.name,
                 "created": issue.fields.created[:10],
-                "child_steps": s,
+                "test_step": s,
+                "expected_result": r,
                 "last_executed_by": by,
                 "last_execution_timestamp": on,
                 "last_execution_status": stat
@@ -133,7 +134,8 @@ def process_entities(jira, config):
                             "parent_id": issue.key,
                             "test_key": linked.key,
                             "summary": linked.fields.summary,
-                            "child_steps": s,
+                            "test_step": s,
+                            "expected_result": r,
                             "last_executed_by": by,
                             "last_execution_timestamp": on,
                             "last_execution_status": stat

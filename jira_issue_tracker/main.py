@@ -28,7 +28,7 @@ def main():
     # Define Column Order for Test Data
     test_cols = [
         "parent_id", "issue_key", "summary", "status", "created", 
-        "child_steps", "last_executed_by", "last_execution_timestamp", "last_execution_status"
+        "test_step", "expected_result", "last_executed_by", "last_execution_timestamp", "last_execution_status"
     ]
 
     if JiraConfig.EXPORT_FORMAT == "EXCEL":
