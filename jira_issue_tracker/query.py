@@ -40,11 +40,24 @@ def fetch_zephyr_data(issue_id, issue_key, config):
                 # Zephyr returns the most recent execution at index 0
                 latest = executions[0]
                 
+                # Robustly find the status ID (handling API typos and variations)
+                status_id = '-1'
+                if latest.get('executionStatusId'):
+                    status_id = str(latest['executionStatusId'])
+                elif latest.get('exeuctionStatusId'): # Typo from some Zephyr versions
+                    status_id = str(latest['exeuctionStatusId'])
+                elif latest.get('executionStatus'):
+                    status_id = str(latest['executionStatus'])
+                elif latest.get('status'):
+                    if isinstance(latest['status'], dict):
+                        status_id = str(latest['status'].get('id', '-1'))
+                    else:
+                        status_id = str(latest['status'])
+                
                 # Get Status Display Name via Lookup
-                status_id = str(latest.get('executionStatusId', '-1'))
                 status_obj = status_lookup.get(status_id)
                 if status_obj:
-                    exec_status = status_obj.get('name', 'Unknown')
+                    exec_status = status_obj.get('name') or status_obj.get('displayName', 'Unknown')
                 
                 # Get User and Timestamp
                 executed_by = latest.get('executedByDisplay', latest.get('executedBy', 'Unknown'))
